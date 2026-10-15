@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>BLACKSITE: LAST SIGNAL</title>
+<style>html,body{margin:0;padding:0;height:100%;background:#05070a;overflow:hidden}
+#bs-root{position:fixed;inset:0}</style>
+</head>
+<body>
+<div id="bs-root"></div>
+<noscript>Necesitas JavaScript activado.</noscript>
+
+<!-- Orden de carga OBLIGATORIO (§2.1). No reordenar. main.js SIEMPRE el último. -->
+<script src="js/core/util.js"></script>
+<script src="js/core/debug.js"></script>
+<script src="js/core/gl.js"></script>
+<script src="js/core/input.js"></script>
+<script src="js/core/audio.js"></script>
+<script src="js/core/textures.js"></script>
+<script src="js/render/shaders.js"></script>
+<script src="js/render/mesh.js"></script>
+<script src="js/render/renderer.js"></script>
+<script src="js/render/fx.js"></script>
+<script src="js/world/leveldata.js"></script>
+<script src="js/world/level.js"></script>
+<script src="js/world/physics.js"></script>
+<script src="js/entities/projectiles.js"></script>
+<script src="js/entities/weapons.js"></script>
+<script src="js/entities/player.js"></script>
+<script src="js/entities/pickups.js"></script>
+<script src="js/entities/enemies.js"></script>
+<script src="js/ui/style.js"></script>
+<script src="js/ui/hud.js"></script>
+<script src="js/ui/menu.js"></script>
+<script src="js/game/game.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

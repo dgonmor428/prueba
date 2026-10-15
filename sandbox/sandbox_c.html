@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>BLACKSITE: LAST SIGNAL — sandbox LOTE C</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#05070a;overflow:hidden;
+    font:12px/1.35 Consolas,"Courier New",monospace;color:#9fe9ff}
+  #bs-root{position:fixed;inset:0}
+  #sc-bar{position:fixed;left:8px;bottom:8px;z-index:60;display:flex;gap:6px;flex-wrap:wrap}
+  button{font:inherit;color:#06121a;background:#7fe7ff;border:1px solid #7fe7ff;padding:4px 9px;
+    cursor:pointer;border-radius:3px}
+  button:hover{background:#b6f2ff}
+  button.alt{background:#241b2e;color:#c9a9ff;border-color:#7b5cff}
+  #sc-diag{position:fixed;right:8px;top:8px;z-index:60;display:none;padding:8px 10px;
+    background:rgba(0,0,0,.82);border:1px solid rgba(127,231,255,.3);white-space:pre-wrap;
+    max-width:46%;max-height:92vh;overflow:auto;pointer-events:auto}
+  #sc-err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    background:#05070a;color:#ff9a9a;z-index:70;text-align:center;padding:24px;white-space:pre-wrap}
+  b.ok{color:#79ffa8} b.bad{color:#ff8f8f}
+</style>
+</head>
+<body>
+<div id="bs-root"></div>
+<noscript>Necesitas JavaScript activado.</noscript>
+
+<div id="sc-bar">
+  <button id="sc-diag-btn" class="alt">TEST + DIAG</button>
+  <button id="sc-auto-btn" class="alt">AUTO: OFF</button>
+  <button id="sc-qual-btn" class="alt">CALIDAD</button>
+</div>
+<div id="sc-diag"></div>
+<div id="sc-err"></div>
+
+<!-- Orden de carga OBLIGATORIO (§2.1). main.js SIEMPRE el último: llama a BS.Main.boot(). -->
+<script src="../js/core/util.js"></script>
+<script src="../js/core/debug.js"></script>
+<script src="../js/core/gl.js"></script>
+<script src="../js/core/input.js"></script>
+<script src="../js/core/audio.js"></script>
+<script src="../js/core/textures.js"></script>
+<script src="../js/render/shaders.js"></script>
+<script src="../js/render/mesh.js"></script>
+<script src="../js/render/renderer.js"></script>
+<script src="../js/render/fx.js"></script>
+<script src="../js/world/leveldata.js"></script>
+<script src="../js/world/level.js"></script>
+<script src="../js/world/physics.js"></script>
+<script src="../js/entities/projectiles.js"></script>
+<script src="../js/entities/weapons.js"></script>
+<script src="../js/entities/player.js"></script>
+<script src="../js/entities/pickups.js"></script>
+<script src="../js/entities/enemies.js"></script>
+<script src="../js/ui/style.js"></script>
+<script src="../js/ui/hud.js"></script>
+<script src="../js/ui/menu.js"></script>
+<script src="../js/game/game.js"></script>
+<script src="../js/main.js"></script>
+
+<script>
+/* =========================================================================
+ * Arnés de verificación del LOTE C (juego completo).
+ * - NO usa fetch ni módulos.
+ * - NO interfiere con el bucle del juego: sólo consulta estado y ejecuta
+ *   BS.Debug (paso fijo determinista).
+ * - Expone window.BS.sandboxC para el tester (sin globales sueltos).
+ * ========================================================================= */
+(function () {
+  'use strict';
+
+  var AUTO = /[?&]auto=1\b/.test(location.search);
+  var SHOW_DIAG = /[?&]diag=1\b/.test(location.search);
+
+  var errBox = document.getElementById('sc-err');
+  var diagPanel = document.getElementById('sc-diag');
+  var diagBtn = document.getElementById('sc-diag-btn');
+  var autoBtn = document.getElementById('sc-auto-btn');
+  var qualBtn = document.getElementById('sc-qual-btn');
+
+  var diagVisible = SHOW_DIAG;
+  var autoMode = AUTO;
+  var autoTimer = 0;
+  var timings = { bootMs: 0 };
+  var startMs = (new Date()).getTime();
+
+  function fail(msg) {
+    errBox.style.display = 'flex';
+    errBox.textContent = 'SANDBOX LOTE C — no se puede continuar\n\n' + msg;
+    try { if (window.BS && window.BS.Log) window.BS.Log.error('sandbox_c:', msg); } catch (e) { /* noop */ }
+  }
+
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Diagnóstico                                                        */
+  /* ------------------------------------------------------------------ */
+  function line(label, value) { return '  ' + label + ' = ' + value; }
+
+  function buildDiagnostics() {
+    var bs = window.BS;
+    var lines = [];
+    lines.push('=== TESTS (BS.Debug.runAllSummary) ===');
+    try {
+      var res = bs.Debug.runAllSummary();
+      lines.push((res.ok ? '<b class="ok">TODOS OK</b>' : '<b class="bad">FALLOS</b>') +
+        '  ' + (res.total - res.failed.length) + '/' + res.total);
+      for (var i = 0; i < res.results.length; i++) {
+        var r = res.results[i];
+        lines.push('  ' + (r.ok ? '\u2714' : '\u2718') + ' ' + esc(r.id) + '  ' +
+          (r.error ? ('ERROR: ' + esc(r.error)) : ((r.skipped ? 'OMITIDO (' + esc(r.skipped) + ')' : '') || (r.ms + ' ms'))));
+      }
+    } catch (e) {
+      lines.push('  EXCEPCIÓN en runAllSummary: ' + esc(e && e.message ? e.message : e));
+    }
+
+    lines.push('');
+    lines.push('=== JUEGO ===');
+    try {
+      var G = bs.Game;
+      if (G) {
+        lines.push(line('estado   ', esc(G.getState ? G.getState() : '?')));
+        lines.push(line('oleadas  ', G.waves ? G.waves.length : 0) + '  (actual=' + G.currentWave + ')');
+        lines.push(line('objetivos', G.objectives ? G.objectives.length : 0) + '  (hechos=' + (G.objectivesDoneCount ? G.objectivesDoneCount() : 0) + ')');
+        lines.push(line('bajas    ', G.kills) + '  disparos=' + G.shotsFired + '  precisión=' + Math.round((G.accuracy ? G.accuracy() : 0) * 100) + '%');
+        lines.push(line('misión   ', bs.Util.formatTime ? bs.Util.formatTime(G.missionTime) : G.missionTime) + '  nivel=' + (G.levelFallback ? 'FALLBACK (LOTE B ausente)' : 'real'));
+        var st = bs.Debug.stats ? bs.Debug.stats() : null;
+        if (st) {
+          lines.push(line('fps      ', st.fps.toFixed(1)) + '  frameMs=' + st.frameMs.toFixed(2));
+          lines.push(line('drawCalls', st.drawCalls) + '  tris=' + st.tris + '  partículas=' + st.particles);
+          lines.push(line('calidad  ', st.quality) + '  resScale=' + st.resolutionScale);
+        }
+        lines.push('  enemigos vivos = ' + ((bs.Debug.state ? bs.Debug.state().enemiesAlive : 0) | 0));
+      } else {
+        lines.push('  BS.Game no disponible');
+      }
+    } catch (e2) {
+      lines.push('  EXCEPCIÓN leyendo estado: ' + esc(e2 && e2.message ? e2.message : e2));
+    }
+
+    lines.push('');
+    lines.push('=== HUD ===');
+    try { lines.push('  ' + esc(bs.Debug.snapshotHud ? bs.Debug.snapshotHud() : 'n/a')); }
+    catch (e3) { lines.push('  EXCEPCIÓN: ' + esc(e3 && e3.message ? e3.message : e3)); }
+
+    lines.push('');
+    lines.push('=== TIEMPOS DE ARRANQUE ===');
+    lines.push(line('arranque total', Math.round((new Date()).getTime() - startMs) + ' ms'));
+    lines.push(line('texturas      ', Math.round(bs.Textures && bs.Textures.buildMs || 0) + ' ms   (objetivo \u2264 450)'));
+    lines.push(line('nivel         ', Math.round((bs.Game && bs.Game.ctx && bs.Game.ctx.level && bs.Game.ctx.level.buildTimeMs) || 0) + ' ms   (objetivo \u2264 800)'));
+    lines.push(line('errores capt. ', (bs.Debug.errors ? bs.Debug.errors.length : 0)));
+
+    var info = null;
+    try { info = bs.GL.info ? bs.GL.info() : null; } catch (e4) { info = null; }
+    if (info) {
+      lines.push('');
+      lines.push('=== GPU ===');
+      lines.push('  ' + esc(info.context) + (info.isWebGL2 ? ' (WebGL2)' : '') +
+        (info.isSoftware ? '  [SOFTWARE]' : '') + '\n  ' + esc(info.renderer || 'n/a'));
+    }
+
+    diagPanel.innerHTML = lines.join('\n');
+    return lines.join('\n');
+  }
+
+  function showDiag(on) {
+    diagVisible = !!on;
+    diagPanel.style.display = diagVisible ? 'block' : 'none';
+    if (diagVisible) buildDiagnostics();
+  }
+
+  function setAuto(on) {
+    autoMode = !!on;
+    if (autoBtn) autoBtn.textContent = 'AUTO: ' + (autoMode ? 'ON' : 'OFF');
+    if (autoMode) startAuto();
+    else if (autoTimer) { clearInterval(autoTimer); autoTimer = 0; }
+  }
+
+  /* Simula el juego de forma determinista sin depender del ratón. */
+  function startAuto() {
+    var bs = window.BS;
+    if (!bs || !bs.Game || !bs.Main || !bs.Main.ready) return;
+    try {
+      if (!bs.Game.ctx) return;
+      if (bs.Game.getState() !== 'playing' && bs.Game.getState() !== 'tutorial') {
+        if (bs.Debug.startGame) bs.Debug.startGame();
+      }
+      if (autoTimer) clearInterval(autoTimer);
+      autoTimer = setInterval(function () {
+        try {
+          if (!bs.Main.ready) return;
+          bs.Debug.stepFrames(2);       // avanza la simulación con dt fijo (1/60)
+          if (bs.Input && bs.Input.simulateKey) {
+            // ligero bamboleo para provocar movimiento/giro determinista
+            bs.Input.simulateKey('KeyW', true);
+            bs.Input.simulateMouseDelta(2, 0);
+          }
+          if (diagVisible) buildDiagnostics();
+        } catch (e) { /* noop */ }
+      }, 16);
+    } catch (e) { /* noop */ }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Botones                                                            */
+  /* ------------------------------------------------------------------ */
+  if (diagBtn) diagBtn.addEventListener('click', function () { showDiag(!diagVisible); });
+  if (autoBtn) autoBtn.addEventListener('click', function () { setAuto(!autoMode); });
+  if (qualBtn) qualBtn.addEventListener('click', function () {
+    var bs = window.BS;
+    try {
+      var q = bs.Renderer.getQuality ? bs.Renderer.getQuality() : 'high';
+      var next = q === 'high' ? 'medium' : (q === 'medium' ? 'low' : 'high');
+      if (bs.Debug.setQuality) bs.Debug.setQuality(next);
+      qualBtn.textContent = 'CALIDAD: ' + next;
+    } catch (e) { /* noop */ }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Espera al arranque (main.js lo difiere a DOMContentLoaded)         */
+  /* ------------------------------------------------------------------ */
+  var tries = 0;
+  function waitBoot() {
+    var bs = window.BS;
+    if (!bs || !bs.Main) {
+      if (++tries > 600) { fail('No se ha cargado js/main.js (¿ruta de script incorrecta?).'); return; }
+      setTimeout(waitBoot, 16);
+      return;
+    }
+    // ¿Fallo fatal de WebGL? El propio juego ya muestra su caja de error.
+    try {
+      if (bs.Game && bs.Game.STATE && bs.Game.state === bs.Game.STATE.ERROR) {
+        fail('El juego no pudo arrancar (WebGL/shaders). Revisa la consola.');
+        return;
+      }
+    } catch (e) { /* noop */ }
+
+    if (bs.Main.ready) {
+      timings.bootMs = (new Date()).getTime() - startMs;
+      onReady(bs);
+      return;
+    }
+    if (++tries > 900) { fail('El juego no terminó de arrancar en 15 s.'); return; }
+    setTimeout(waitBoot, 16);
+  }
+
+  function onReady(bs) {
+    if (qualBtn) {
+      try { qualBtn.textContent = 'CALIDAD: ' + (bs.Renderer.getQuality ? bs.Renderer.getQuality() : '?'); } catch (e) { /* noop */ }
+    }
+    if (autoBtn) autoBtn.textContent = 'AUTO: ' + (autoMode ? 'ON' : 'OFF');
+    if (diagVisible) showDiag(true);
+    if (autoMode) setAuto(true);
+
+    // Manejador mínimo para el tester (sin globales sueltos).
+    window.BS.sandboxC = {
+      diagnostics: buildDiagnostics,
+      timings: timings,
+      showDiag: showDiag,
+      setAuto: setAuto,
+      isAuto: function () { return autoMode; },
+      startGame: function () { try { bs.Debug.startGame(); } catch (e) { /* noop */ } },
+      step: function (n) { try { bs.Debug.stepFrames(n | 0); } catch (e) { /* noop */ } },
+      state: function () { try { return bs.Debug.state(); } catch (e) { return null; } }
+    };
+  }
+
+  waitBoot();
+})();
+</script>
+</body>
+</html>

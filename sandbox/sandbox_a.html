@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>BLACKSITE: LAST SIGNAL — sandbox LOTE A</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#05070a;overflow:hidden;
+    font:12px/1.35 Consolas,"Courier New",monospace;color:#9fe9ff}
+  #bs-root{position:fixed;inset:0}
+  #hud-panel{position:fixed;left:8px;top:8px;padding:8px 10px;background:rgba(0,0,0,.66);
+    border:1px solid rgba(127,231,255,.3);white-space:pre;pointer-events:none;z-index:20;max-width:48%}
+  #diag-panel{position:fixed;right:8px;top:8px;padding:8px 10px;background:rgba(0,0,0,.66);
+    border:1px solid rgba(127,231,255,.3);white-space:pre-wrap;z-index:20;max-width:46%;max-height:92vh;overflow:auto}
+  #buttons{position:fixed;left:8px;bottom:8px;z-index:21;display:flex;gap:6px;flex-wrap:wrap}
+  button{font:inherit;color:#06121a;background:#7fe7ff;border:1px solid #7fe7ff;padding:5px 10px;
+    cursor:pointer;border-radius:3px}
+  button:hover{background:#b6f2ff}
+  button.alt{background:#241b2e;color:#c9a9ff;border-color:#7b5cff}
+  #hint{position:fixed;left:50%;bottom:52px;transform:translateX(-50%);color:#cfefff;
+    background:rgba(0,0,0,.6);padding:4px 10px;border-radius:3px;z-index:20}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    background:#05070a;color:#ff9a9a;z-index:40;text-align:center;padding:24px;white-space:pre-wrap}
+  b.ok{color:#79ffa8} b.bad{color:#ff8f8f}
+</style>
+</head>
+<body>
+<div id="bs-root"></div>
+<noscript>Necesitas JavaScript activado.</noscript>
+
+<!-- Orden de carga §2.1 para el LOTE A (solo los 10 primeros archivos) -->
+<script src="../js/core/util.js"></script>
+<script src="../js/core/debug.js"></script>
+<script src="../js/core/gl.js"></script>
+<script src="../js/core/input.js"></script>
+<script src="../js/core/audio.js"></script>
+<script src="../js/core/textures.js"></script>
+<script src="../js/render/shaders.js"></script>
+<script src="../js/render/mesh.js"></script>
+<script src="../js/render/renderer.js"></script>
+<script src="../js/render/fx.js"></script>
+
+<script>
+/* Arnés de verificación del LOTE A. NO usa fetch ni módulos. */
+(function () {
+  'use strict';
+
+  var AUTO = /[?&]auto=1\b/.test(location.search);
+  var bs = window.BS;
+  var dom = bs.Util.ensureDOM();
+  var canvas = dom.canvas3d;
+
+  var hudPanel = document.getElementById('hud-panel');
+  var diagPanel = document.getElementById('diag-panel');
+  var errBox = document.getElementById('err');
+  var hint = document.getElementById('hint');
+
+  var IDENTITY = bs.Math.m4identity(bs.Math.m4());
+  var timings = {};
+
+  function fail(msg) {
+    errBox.style.display = 'flex';
+    errBox.textContent = 'SANDBOX LOTE A — no se puede continuar\n\n' + msg;
+    bs.Log.error('sandbox_a:', msg);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 1. Contexto WebGL                                                   */
+  /* ------------------------------------------------------------------ */
+  var t0 = bs.Util.nowMs();
+  var glOk = bs.GL.init(canvas, { antialias: false, alpha: false, preserveDrawingBuffer: true });
+  if (!glOk || !glOk.ok) {
+    fail('WebGL no disponible: ' + (glOk && glOk.reason ? glOk.reason : 'desconocido'));
+    return;
+  }
+  bs.Debug.captureErrors();
+
+  /* ------------------------------------------------------------------ */
+  /* 2. Texturas, renderer, input                                        */
+  /* ------------------------------------------------------------------ */
+  bs.Textures.init(bs.GL);
+  timings.texturesMs = Math.round(bs.Textures.buildMs);
+
+  var tr = bs.Util.nowMs();
+  var rendererOk = bs.Renderer.init(bs.GL, { postFx: !bs.GL.caps.isSoftware });
+  timings.rendererMs = Math.round(bs.Util.nowMs() - tr);
+  if (!rendererOk) {
+    fail('BS.Renderer.init devolvió false (revisa la consola: fallo de compilación de shaders).');
+    return;
+  }
+
+  bs.Input.init(canvas);
+  bs.Audio.init();
+  bs.FX.init({ renderer: bs.Renderer, gl: bs.GL, textures: bs.Textures, quality: bs.Renderer.getQuality() });
+
+  bs.Renderer.setFov(78);
+  bs.Renderer.setNearFar(0.05, 400);
+  bs.Renderer.setAmbient([0.07, 0.085, 0.115], [0.02, 0.021, 0.026]);
+  bs.Renderer.setFog([0.02, 0.026, 0.033], 0.035);
+  bs.Renderer.setMaxDynamicLights(3);
+
+  /* ------------------------------------------------------------------ */
+  /* 3. Escena: pasillo con ≥200 cajas agrupadas por material (≤12 DC)   */
+  /* ------------------------------------------------------------------ */
+  function buildScene() {
+    var groups = {};
+    var rng = bs.RNG.create(0x51A9DE);
+    function g(id) { if (!groups[id]) groups[id] = bs.Mesh.create(); return groups[id]; }
+
+    var i, x, y, z;
+
+    // suelo + techo
+    var gf = g('mat_concrete_floor'), gc = g('mat_ceiling_tile');
+    gf.color = [0.85, 0.86, 0.9];
+    gc.color = [0.7, 0.72, 0.78];
+    for (i = 0; i < 24; i++) {
+      z = 2 - i * 3;
+      gf.box([0, -0.5, z], [6, 1, 3], [1, 1]);
+      gc.box([0, 3.2, z], [6, 1, 3], [1, 1]);
+    }
+
+    // paredes
+    var gw = g('mat_concrete_wall');
+    gw.color = [0.78, 0.8, 0.86];
+    for (i = 0; i < 24; i++) {
+      z = 2 - i * 3;
+      gw.box([-3.5, 1.35, z], [1, 3.2, 3], [1, 1]);
+      gw.box([3.5, 1.35, z], [1, 3.2, 3], [1, 1]);
+    }
+
+    // paneles metálicos
+    var gm = g('mat_metal_panel');
+    gm.color = [0.9, 0.92, 0.96];
+    for (i = 0; i < 24; i++) {
+      z = 0 - i * 3;
+      gm.box([(i % 2 ? -2.9 : 2.9), 1.6, z], [0.35, 2.2, 2.4], [1, 1]);
+    }
+
+    // cajas / crates dispersos
+    var gcr = g('mat_crate');
+    gcr.color = [0.95, 0.92, 0.86];
+    for (i = 0; i < 48; i++) {
+      x = -2.2 + rng() * 4.4;
+      z = -2 - rng() * 60;
+      y = 0.45 + (rng() < 0.3 ? 0.9 : 0);
+      gcr.box([x, y, z], [0.9, 0.9, 0.9], [1, 1], rng() * Math.PI);
+    }
+
+    // tuberías (cilindros)
+    var gp = g('mat_pipe');
+    gp.color = [0.72, 0.76, 0.82];
+    for (i = 0; i < 16; i++) {
+      z = -1 - i * 4;
+      gp.cylinder([(i % 2 ? -3.1 : 3.1), 2.8, z], 0.16, 3.6, 10, 'z', true);
+    }
+
+    // franjas emisivas
+    var gs = g('mat_strip_cyan');
+    gs.color = [1, 1, 1];
+    for (i = 0; i < 16; i++) {
+      z = 0 - i * 4;
+      gs.emissive = 1;
+      gs.box([(i % 2 ? -3.42 : 3.42), 2.6, z], [0.12, 0.22, 3.0], [1, 1]);
+      gs.emissive = 0;
+    }
+
+    // cristaleras
+    var gg = g('mat_glass');
+    gg.color = [1, 1, 1];
+    for (i = 0; i < 6; i++) {
+      z = -6 - i * 9;
+      gg.box([0, 1.7, z], [5.4, 2.4, 0.12], [1, 1]);
+    }
+
+    var chunks = [];
+    for (var id in groups) {
+      if (!Object.prototype.hasOwnProperty.call(groups, id)) continue;
+      chunks.push({ mesh: bs.Mesh.toGL(groups[id]), material: bs.Textures.getMaterial(id) });
+    }
+    return chunks;
+  }
+
+  var tb = bs.Util.nowMs();
+  var chunks = buildScene();
+  timings.geometryMs = Math.round(bs.Util.nowMs() - tb);
+
+  // cubo con normal map (rota)
+  var cubeMesh = (function () {
+    var b = bs.Mesh.create();
+    b.box([0, 0, 0], [2, 2, 2], [1, 1]);
+    return bs.Mesh.toGL(b);
+  })();
+  var matCube = bs.Textures.getMaterial('mat_metal_panel');
+
+  /* ------------------------------------------------------------------ */
+  /* 4. Cámara, luces y estado                                           */
+  /* ------------------------------------------------------------------ */
+  var yaw = 0, pitch = -0.05;
+  var eye = new Float32Array([0, 1.6, 4]);
+  var time = 0;
+  var lastT = bs.Util.now();
+  var sparkTimer = 0;
+  var running = true;
+
+  // 3 luces dinámicas móviles
+  var lights = [
+    { pos: [0, 2.4, 0], color: [1.0, 0.4, 0.25], radius: 12, intensity: 1.4 },
+    { pos: [0, 2.4, 0], color: [0.3, 0.8, 1.0], radius: 12, intensity: 1.2 },
+    { pos: [0, 2.4, 0], color: [0.5, 1.0, 0.6], radius: 12, intensity: 1.0 }
+  ];
+
+  function updateLights(t) {
+    var i, L;
+    for (i = 0; i < lights.length; i++) {
+      L = lights[i];
+      var ph = t * 0.6 + i * 2.09;
+      L.pos[0] = Math.sin(ph) * 2.4;
+      L.pos[1] = 2.4 + Math.sin(ph * 1.7) * 0.6;
+      L.pos[2] = -6 - i * 18 + Math.cos(ph) * 3.0;
+    }
+  }
+
+  function forward(out) {
+    return bs.Math.v3fromYawPitch(out, yaw, pitch);
+  }
+  var fwd = new Float32Array(3);
+  var flashPos = new Float32Array(3);
+
+  /* ------------------------------------------------------------------ */
+  /* 5. Entrada                                                          */
+  /* ------------------------------------------------------------------ */
+  function resumeAudio() {
+    try {
+      bs.Audio.init();
+      var p = bs.Audio.resume();
+      if (p && typeof p.catch === 'function') p.catch(function () { });
+    } catch (e) { /* noop */ }
+  }
+
+  canvas.addEventListener('click', function () {
+    if (!AUTO) bs.Input.requestPointerLock();
+    resumeAudio();
+    bs.Audio.play('ui_click');
+  });
+
+  var sens = 0.0022;
+  var keys = {};
+
+  window.addEventListener('keydown', function (ev) {
+    if (ev.code) keys[ev.code] = true;
+    if (ev.code === 'Space') fireWeapon();
+  });
+  window.addEventListener('keyup', function (ev) { if (ev.code) keys[ev.code] = false; });
+
+  function fireWeapon() {
+    forward(fwd);
+    var muzzle = new Float32Array([eye[0] + fwd[0] * 0.4, eye[1] - 0.15, eye[2] + fwd[2] * 0.4]);
+    var end = new Float32Array([eye[0] + fwd[0] * 18, eye[1] + fwd[1] * 18, eye[2] + fwd[2] * 18]);
+    bs.FX.muzzleFlash(muzzle, fwd, 1);
+    bs.FX.tracer(muzzle, end, [1.0, 0.9, 0.55], 0.03, 0.07);
+    bs.FX.impact(end, [-fwd[0], -fwd[1], -fwd[2]], 'concrete');
+    bs.FX.screenShake(0.5, 0.1);
+    bs.Audio.play('pistol');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 6. Bucle                                                                */
+  /* ------------------------------------------------------------------ */
+  function frame(nowMs) {
+    if (!running) return;
+    requestAnimationFrame(frame);
+
+    var now = nowMs * 0.001;
+    var dt = now - lastT;
+    lastT = now;
+    if (dt > 0.5) dt = 0;
+    dt = Math.min(dt, 1 / 15);
+    time += dt;
+
+    bs.Input.beginFrame();
+
+    /* --- movimiento de cámara --- */
+    if (AUTO) {
+      yaw = Math.sin(time * 0.15) * 0.35;
+      pitch = -0.05 + Math.sin(time * 0.23) * 0.12;
+      eye[0] = Math.sin(time * 0.25) * 1.6;
+      eye[1] = 1.6;
+      eye[2] = 4 - (time * 0.6) % 40;
+    } else {
+      var md = bs.Input.consumeMouseDelta();
+      yaw -= md.dx * sens;
+      pitch = bs.Math.clamp(pitch - md.dy * sens, -1.5, 1.5);
+      var spd = (keys.ShiftLeft ? 6 : 2.6) * dt;
+      if (keys.KeyW) { eye[0] -= Math.sin(yaw) * spd; eye[2] -= Math.cos(yaw) * spd; }
+      if (keys.KeyS) { eye[0] += Math.sin(yaw) * spd; eye[2] += Math.cos(yaw) * spd; }
+      if (keys.KeyA) { eye[0] -= Math.cos(yaw) * spd; eye[2] += Math.sin(yaw) * spd; }
+      if (keys.KeyD) { eye[0] += Math.cos(yaw) * spd; eye[2] -= Math.sin(yaw) * spd; }
+      var wheel = bs.Input.consumeWheel();
+      if (wheel) bs.Renderer.setFov(bs.Renderer.getFov() - wheel * 0.05);
+    }
+
+    /* --- simulación FX --- */
+    sparkTimer -= dt;
+    if (sparkTimer <= 0) {
+      sparkTimer = 0.12;
+      var sx = -3.2 + Math.random() * 6.4;
+      var sz = -2 - Math.random() * 40;
+      bs.FX.impact([sx, 1.2 + Math.random() * 1.4, sz], [0, 1, 0], Math.random() < 0.5 ? 'metal' : 'concrete');
+    }
+    if (AUTO && Math.sin(time * 0.4) > 0.97) bs.FX.explosion([0, 1.6, -20], 3, [1, 0.6, 0.25]);
+    bs.FX.update(dt);
+
+    /* --- render --- */
+    var shake = bs.FX.getShake();
+    forward(fwd);
+    flashPos[0] = eye[0] + fwd[0] * 0.2;
+    flashPos[1] = eye[1] + fwd[1] * 0.2;
+    flashPos[2] = eye[2] + fwd[2] * 0.2;
+
+    bs.Renderer.setTime(time);
+    bs.Renderer.beginFrame([0.02, 0.026, 0.033, 1]);
+    bs.Renderer.setCamera([eye[0] + shake.offsetX, eye[1] + shake.offsetY, eye[2]], yaw, pitch, shake.roll);
+    bs.Renderer.updateFrustum();
+    updateLights(time);
+
+    var allLights = lights.concat(bs.FX.getLights());
+    bs.Renderer.setDynamicLights(allLights);
+    bs.Renderer.setFlashlight({
+      on: true, pos: flashPos, dir: fwd, color: [1.0, 0.97, 0.9],
+      intensity: 1.15, range: 22, cosInner: 0.94, cosOuter: 0.78
+    });
+
+    var i;
+    for (i = 0; i < chunks.length; i++) {
+      if (bs.Renderer.isVisible(chunks[i].mesh.aabb)) {
+        bs.Renderer.push(chunks[i].mesh, IDENTITY, chunks[i].material);
+      }
+    }
+
+    // cubo con normal map girando
+    var cubeM = bs.Math.m4fromTRS(bs.Math.m4(), [0, 1.7, -7], time * 0.9, time * 0.6, 0, 1);
+    bs.Renderer.push(cubeMesh, cubeM, matCube);
+
+    // blob de sombra bajo el cubo
+    bs.Renderer.drawShadowBlob([0, 0.02, -7], 1.7, 0.5);
+
+    bs.FX.beginFrame();
+    bs.FX.render(bs.Renderer);
+
+    bs.Renderer.flush();
+    bs.Renderer.present();
+
+    bs.Input.endFrame();
+
+    updateHud();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 7. Overlays                                                         */
+  /* ------------------------------------------------------------------ */
+  var hudAcc = 0;
+  function updateHud() {
+    hudAcc++;
+    if (hudAcc % 12 !== 0) return;
+    var st = bs.Debug.stats();
+    var info = bs.GL.info();
+    hudPanel.textContent =
+      'BLACKSITE — sandbox LOTE A' + (AUTO ? '  [AUTO]' : '') + '\n' +
+      'fps=' + st.fps.toFixed(1) + '  frameMs=' + st.frameMs.toFixed(2) + '\n' +
+      'drawCalls=' + st.drawCalls + '  tris=' + st.tris + '\n' +
+      'particulas=' + st.particles + '  luces=' + st.lightsOn + '/' + st.lights + '\n' +
+      'calidad=' + st.quality + '  resScale=' + st.resolutionScale + '\n' +
+      'gl=' + info.context + (info.isWebGL2 ? ' (WebGL2)' : '') + '\n' +
+      'gpu=' + (info.renderer || 'n/a') + (info.isSoftware ? '  [SOFTWARE]' : '') + '\n' +
+      'audio=' + (st.audioState || 'none');
+    if (AUTO) hint.style.display = 'none';
+  }
+
+  function buildDiagnostics() {
+    var res = bs.Debug.runAllSummary();
+
+    var lines = [];
+    lines.push('=== TESTS (BS.Debug.runAll) ===');
+    lines.push((res.ok ? '<b class="ok">TODOS OK</b>' : '<b class="bad">FALLOS</b>') +
+      '  ' + (res.total - res.failed.length) + '/' + res.total);
+    for (var i = 0; i < res.results.length; i++) {
+      var r = res.results[i];
+      lines.push('  ' + (r.ok ? '✔' : '✘') + ' ' + r.id + '  ' + (r.error ? ('ERROR: ' + r.error) : (r.ms + ' ms')));
+    }
+    lines.push('');
+    lines.push('=== TIEMPOS DE CONSTRUCCIÓN (§7.5) ===');
+    lines.push('  texturas       ' + timings.texturesMs + ' ms   (objetivo ≤ 450)');
+    lines.push('  shaders+GL     ' + timings.rendererMs + ' ms   (objetivo ≤ 60)');
+    lines.push('  geometría      ' + timings.geometryMs + ' ms   (objetivo ≤ 500)');
+    lines.push('  TOTAL          ' + (timings.texturesMs + timings.rendererMs + timings.geometryMs) + ' ms   (objetivo ≤ 1300)');
+    lines.push('');
+    lines.push('=== ESCENA ===');
+    lines.push('  chunks (materiales) = ' + chunks.length);
+    var tris = 0, i2;
+    for (i2 = 0; i2 < chunks.length; i2++) tris += (chunks[i2].mesh.indexCount || 0) / 3;
+    lines.push('  triángulos estáticos = ' + Math.round(tris));
+    lines.push('  errores capturados = ' + bs.Debug.errors.length);
+
+    diagPanel.innerHTML = lines.join('\n');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 8. Botones y arranque                                               */
+  /* ------------------------------------------------------------------ */
+  var bar = document.createElement('div');
+  bar.id = 'buttons';
+  function mkBtn(label, cls, fn) {
+    var b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.addEventListener('click', fn);
+    bar.appendChild(b);
+  }
+  mkBtn('SONIDO', '', function () { resumeAudio(); bs.Audio.play('ui_hover'); });
+  mkBtn('DISPARO', '', function () { fireWeapon(); });
+  mkBtn('PISTOLA (audio)', '', function () { resumeAudio(); bs.Audio.play('pistol'); });
+  mkBtn('EXPLOSIÓN', '', function () {
+    bs.FX.explosion([eye[0] + fwd[0] * 8, 1.4, eye[2] + fwd[2] * 8], 4, [1, 0.6, 0.25]);
+    bs.Audio.play('explosion');
+  });
+  mkBtn('TEST + DIAG', 'alt', function () { buildDiagnostics(); });
+  mkBtn('CALIDAD: ' + bs.Renderer.getQuality(), 'alt', function () {
+    var q = bs.Renderer.getQuality();
+    var next = q === 'high' ? 'medium' : (q === 'medium' ? 'low' : 'high');
+    bs.Debug.setQuality(next);
+    bs.FX.setParticleBudget(next === 'low' ? 250 : (next === 'medium' ? 900 : 2000));
+    this.textContent = 'CALIDAD: ' + next;
+  });
+  document.body.appendChild(bar);
+
+  window.addEventListener('resize', function () { bs.Renderer.resizeToDisplay(); });
+
+  if (!AUTO) {
+    hint.textContent = 'CLIC para bloquear el ratón (WASD, Shift, Space) — el zoom de la linterna sigue al ratón';
+  } else {
+    hint.style.display = 'none';
+  }
+
+  buildDiagnostics();
+  bs.Debug.showOverlay(bs.Debug.report());
+  requestAnimationFrame(frame);
+
+  // Expone un manejador mínimo para el tester (sin crear globales sueltos).
+  window.BS.sandboxA = {
+    chunks: chunks,
+    fireWeapon: fireWeapon,
+    diagnostics: buildDiagnostics,
+    timings: timings,
+    setAuto: function (v) { /* reservado */ }
+  };
+
+})();
+</script>
+</body>
+</html>

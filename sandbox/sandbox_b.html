@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>BLACKSITE: LAST SIGNAL — sandbox LOTE B</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#05070a;overflow:hidden;
+    font:12px/1.35 Consolas,"Courier New",monospace;color:#9fe9ff}
+  #bs-root{position:fixed;inset:0}
+  #hud-panel{position:fixed;left:8px;top:8px;padding:8px 10px;background:rgba(0,0,0,.66);
+    border:1px solid rgba(127,231,255,.3);white-space:pre;pointer-events:none;z-index:20;max-width:48%}
+  #diag-panel{position:fixed;right:8px;top:8px;padding:8px 10px;background:rgba(0,0,0,.66);
+    border:1px solid rgba(127,231,255,.3);white-space:pre-wrap;z-index:20;max-width:46%;max-height:92vh;overflow:auto}
+  #buttons{position:fixed;left:8px;bottom:8px;z-index:21;display:flex;gap:6px;flex-wrap:wrap;max-width:70%}
+  button{font:inherit;color:#06121a;background:#7fe7ff;border:1px solid #7fe7ff;padding:5px 10px;
+    cursor:pointer;border-radius:3px}
+  button:hover{background:#b6f2ff}
+  button.alt{background:#241b2e;color:#c9a9ff;border-color:#7b5cff}
+  button.alt:hover{background:#3a2b52}
+  #hint{position:fixed;left:50%;bottom:52px;transform:translateX(-50%);color:#cfefff;
+    background:rgba(0,0,0,.6);padding:4px 10px;border-radius:3px;z-index:20}
+  #cross{position:fixed;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
+    z-index:19;pointer-events:none;opacity:.75}
+  #cross::before,#cross::after{content:"";position:absolute;background:#cfefff}
+  #cross::before{left:6px;top:0;width:2px;height:14px}
+  #cross::after{top:6px;left:0;height:2px;width:14px}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    background:#05070a;color:#ff9a9a;z-index:40;text-align:center;padding:24px;white-space:pre-wrap}
+  b.ok{color:#79ffa8} b.bad{color:#ff8f8f}
+</style>
+</head>
+<body>
+<div id="bs-root"></div>
+<div id="hud-panel"></div>
+<div id="diag-panel"></div>
+<div id="hint"></div>
+<div id="err"></div>
+<noscript>Necesitas JavaScript activado.</noscript>
+
+<!-- Orden de carga §2.1: LOTE A (1-10) + LOTE B (11-17). Sin LOTE C. -->
+<script src="../js/core/util.js"></script>
+<script src="../js/core/debug.js"></script>
+<script src="../js/core/gl.js"></script>
+<script src="../js/core/input.js"></script>
+<script src="../js/core/audio.js"></script>
+<script src="../js/core/textures.js"></script>
+<script src="../js/render/shaders.js"></script>
+<script src="../js/render/mesh.js"></script>
+<script src="../js/render/renderer.js"></script>
+<script src="../js/render/fx.js"></script>
+<script src="../js/world/leveldata.js"></script>
+<script src="../js/world/level.js"></script>
+<script src="../js/world/physics.js"></script>
+<script src="../js/entities/projectiles.js"></script>
+<script src="../js/entities/weapons.js"></script>
+<script src="../js/entities/player.js"></script>
+<script src="../js/entities/pickups.js"></script>
+
+<script>
+/* ===========================================================================
+ * Arnés de verificación del LOTE B (§3.10-§3.16 + §4).
+ * NO usa fetch, módulos ni recursos externos. No depende del LOTE C:
+ *   - No carga ni usa js/entities/enemies.js, js/ui/*, js/game/game.js, js/main.js.
+ *   - `ctx.combat` es un shim local sobre BS.Physics.raycast (sin enemigos).
+ *   - `ctx.hud` se deja sin definir: el motor de armas lo protege.
+ * Ejecuta el nivel real (BS.LevelData.build -> BS.Level.build), el jugador
+ * (BS.Player), las armas (BS.Weapons), los proyectiles y los pickups.
+ * =========================================================================== */
+(function () {
+  'use strict';
+
+  var AUTO = /[?&]auto=1\b/.test(location.search);
+  var bs = window.BS;
+  if (!bs) { return; }
+
+  var DEG = Math.PI / 180;
+  var dom = bs.Util.ensureDOM();
+  var canvas = dom.canvas3d;
+
+  var hudPanel = document.getElementById('hud-panel');
+  var diagPanel = document.getElementById('diag-panel');
+  var errBox = document.getElementById('err');
+  var hint = document.getElementById('hint');
+
+  var IDENTITY = bs.Math.m4identity(bs.Math.m4());
+  var timings = {};
+
+  function fail(msg) {
+    errBox.style.display = 'flex';
+    errBox.textContent = 'SANDBOX LOTE B — no se puede continuar\n\n' + msg;
+    bs.Log.error('sandbox_b:', msg);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 1. Contexto WebGL                                                   */
+  /* ------------------------------------------------------------------ */
+  var glOk = bs.GL.init(canvas, { antialias: false, alpha: false, preserveDrawingBuffer: true });
+  if (!glOk || !glOk.ok) {
+    fail('WebGL no disponible: ' + (glOk && glOk.reason ? glOk.reason : 'desconocido'));
+    return;
+  }
+  bs.Debug.captureErrors();
+
+  /* ------------------------------------------------------------------ */
+  /* 2. Texturas, renderer, input, audio, FX                             */
+  /* ------------------------------------------------------------------ */
+  bs.Textures.init(bs.GL);
+  timings.texturesMs = Math.round(bs.Textures.buildMs);
+
+  var tr = bs.Util.nowMs();
+  var rendererOk = bs.Renderer.init(bs.GL, { postFx: !bs.GL.caps.isSoftware });
+  timings.rendererMs = Math.round(bs.Util.nowMs() - tr);
+  if (!rendererOk) {
+    fail('BS.Renderer.init devolvió false (fallo de compilación de shaders; revisa la consola).');
+    return;
+  }
+
+  bs.Input.init(canvas);
+  bs.Audio.init();
+  bs.FX.init({ renderer: bs.Renderer, gl: bs.GL, textures: bs.Textures, quality: bs.Renderer.getQuality() });
+
+  var FOV = 78;
+  bs.Renderer.setFov(FOV);
+  bs.Renderer.setNearFar(0.05, 400);
+  bs.Renderer.setMaxDynamicLights(3);
+
+  /* ------------------------------------------------------------------ */
+  /* 3. Nivel real (§4)                                                  */
+  /* ------------------------------------------------------------------ */
+  var levelData = (bs.LevelData && typeof bs.LevelData.build === 'function') ? bs.LevelData.build() : null;
+  if (!levelData) {
+    fail('BS.LevelData.build() devolvió null: no hay misión que cargar.');
+    return;
+  }
+  var env = levelData.environment || {};
+  var clr = env.clearColor || [0.02, 0.026, 0.033];
+  var fogC = (env.fog && env.fog.color) || [0.02, 0.026, 0.033];
+  var fogD = (env.fog && env.fog.density !== undefined) ? env.fog.density : 0.03;
+
+  bs.Renderer.setAmbient((env.ambient && env.ambient.sky) || [0.07, 0.085, 0.115],
+    (env.ambient && env.ambient.ground) || [0.02, 0.021, 0.026]);
+  bs.Renderer.setFog(fogC, fogD);
+
+  var tl = bs.Util.nowMs();
+  var level = bs.Level.build(levelData, { bakeQuality: 'high' });
+  timings.levelMs = Math.round(bs.Util.nowMs() - tl);
+  if (!level || !level.chunkCount) {
+    fail('BS.Level.build() no generó chunks (revisa los avisos de BS.Level).');
+    return;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 4. Contexto compartido (§5.1)                                       */
+  /* ------------------------------------------------------------------ */
+  /* ctx.combat: shim sin enemigos sobre BS.Physics.raycast.
+   * El `mask` se reenvía: con MASK.ENEMY|PLAYER (proyectiles del jugador) el
+   * mundo (flags WORLD) no aparece y, al no haber enemigos, devuelve null. */
+  var combat = {
+    raycast: function (origin, dir, maxDist, mask /*, ignore*/) {
+      var h = bs.Physics.raycast(level, origin, dir, maxDist,
+        (mask === undefined || mask === null) ? (bs.Physics.MASK.WORLD | bs.Physics.MASK.PROP) : mask);
+      if (!h) return null;
+      return {
+        t: h.t, point: h.point, normal: h.normal, distance: h.distance,
+        collider: h.collider, ref: h.ref, enemy: null, headshot: false
+      };
+    },
+    damage: function (/* target, amount, hitInfo */) { return { killed: false, hp: 0, applied: 0 }; },
+    areaDamage: function (/* pos, radius, amount, opts */) { return 0; },
+    noise: function (/* payload */) { /* sin IA en el sandbox */ }
+  };
+
+  var ctx = {
+    renderer: bs.Renderer,
+    gl: bs.GL,
+    level: level,
+    physics: bs.Physics,
+    audio: bs.Audio,
+    events: bs.Events,
+    fx: bs.FX,
+    textures: bs.Textures,
+    input: bs.Input,
+    settings: { fov: FOV },
+    combat: combat,
+    /* player/hud/enemies se rellenan más abajo (o quedan ausentes). */
+    player: null,
+    weapons: null,
+    projectiles: null,
+    pickups: null,
+    hud: null
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* 5. Entidades: proyectiles, jugador, armas, pickups                  */
+  /* ------------------------------------------------------------------ */
+  ctx.projectiles = bs.Projectiles;
+  bs.Projectiles.init(ctx);
+
+  var player = bs.Player.create(ctx);
+  ctx.player = player;                              /* las armas resuelven ctx.player de forma perezosa */
+  var weapons = player ? player.getWeapons() : null;
+  ctx.weapons = weapons;
+  /* Arranque como el juego real: la pistola viene desbloqueada; SMG y breacher
+   * se obtienen recogiendo sus pickups (KINDS.weapon_smg / weapon_breacher). */
+
+  bs.Pickups.init(ctx);
+  ctx.pickups = bs.Pickups;
+
+  function respawnPickups() {
+    bs.Pickups.reset();
+    var src = (level.spawns && level.spawns.pickups) || [];
+    var n = 0;
+    for (var i = 0; i < src.length; i++) { if (bs.Pickups.spawn(src[i])) n++; }
+    return n;
+  }
+  respawnPickups();
+
+  /* ------------------------------------------------------------------ */
+  /* 6. Entrada y estado                                                 */
+  /* ------------------------------------------------------------------ */
+  var time = 0;
+  var lastT = bs.Util.now();
+  var running = true;
+  var flashOn = true;
+  var _eye = new Float32Array(3);
+  var _fwd = new Float32Array(3);
+
+  function resumeAudio() {
+    try {
+      bs.Audio.init();
+      var p = bs.Audio.resume();
+      if (p && typeof p.catch === 'function') p.catch(function () { });
+    } catch (e) { /* noop */ }
+  }
+
+  canvas.addEventListener('click', function () {
+    if (!AUTO) bs.Input.requestPointerLock();
+    resumeAudio();
+    bs.Audio.play('ui_click');
+  });
+
+  window.addEventListener('keydown', function (ev) {
+    if (ev.code === 'KeyF') { flashOn = !flashOn; }
+    if (ev.code === 'KeyP') { respawnPickups(); }
+    if (ev.code === 'KeyH') { if (player) player.heal(25); }
+    if (ev.code === 'KeyV') { if (player) player.damage(25, null, 'test'); }
+  });
+
+  var autoFirePhase = 0;
+  function driveAuto(dt) {
+    bs.Input.simulateKey('KeyW', true);
+    bs.Input.simulateMouseDelta(Math.sin(time * 0.5) * 8 * dt * 60, Math.sin(time * 0.31) * 3 * dt * 60);
+    autoFirePhase += dt;
+    var cyc = autoFirePhase % 1.4;
+    bs.Input.simulateMouseButton(0, cyc < 0.16);
+  }
+
+  function teleport(x, y, z, yaw) {
+    if (!player) return;
+    player.respawn(new Float32Array([x, y, z]), (yaw === undefined ? player.yaw : yaw));
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 7. Bucle principal (§5.2: update fijo, sin lógica de juego aquí)    */
+  /* ------------------------------------------------------------------ */
+  function frame(nowMs) {
+    if (!running) return;
+    requestAnimationFrame(frame);
+
+    var now = nowMs * 0.001;
+    var dt = now - lastT;
+    lastT = now;
+    if (dt > 0.5) dt = 0;
+    dt = Math.min(dt, 1 / 15);
+    time += dt;
+
+    bs.Input.beginFrame();
+    if (AUTO) driveAuto(dt);
+
+    if (player) player.update(dt);
+    if (weapons && typeof weapons.update === 'function') weapons.update(dt);
+    bs.Projectiles.update(dt);
+    bs.Pickups.update(dt);
+    bs.FX.update(dt);
+
+    /* --- cámara --- */
+    var shake = bs.FX.getShake();
+    if (player) player.eyePosition(_eye);
+    var pyaw = player ? player.yaw : 0;
+    var ppitch = player ? player.pitch : 0;
+    var rollRad = (player ? player.rollDeg * DEG : 0) + (shake.roll || 0);
+    if (player) player.forward(_fwd); else bs.Math.v3fromYawPitch(_fwd, pyaw, ppitch);
+
+    bs.Renderer.setTime(time);
+    bs.Renderer.beginFrame([clr[0], clr[1], clr[2], 1]);
+    bs.Renderer.setCamera([_eye[0] + shake.offsetX, _eye[1] + shake.offsetY, _eye[2]], pyaw, ppitch, rollRad);
+    bs.Renderer.updateFrustum();
+
+    /* FX (trazadoras, chispas, destellos) como luces dinámicas. */
+    bs.Renderer.setDynamicLights(bs.FX.getLights());
+    bs.Renderer.setFlashlight({
+      on: flashOn,
+      pos: [_eye[0] + _fwd[0] * 0.15, _eye[1] + _fwd[1] * 0.15, _eye[2] + _fwd[2] * 0.15],
+      dir: _fwd,
+      color: [1.0, 0.96, 0.88],
+      intensity: 1.25,
+      range: 26,
+      cosInner: 0.93,
+      cosOuter: 0.72
+    });
+
+    /* geometría del nivel */
+    var i;
+    for (i = 0; i < level.chunks.length; i++) {
+      if (bs.Renderer.isVisible(level.chunks[i].aabb)) {
+        bs.Renderer.push(level.chunks[i].mesh, IDENTITY, level.chunks[i].material);
+      }
+    }
+    for (i = 0; i < level.props.length; i++) {
+      if (bs.Renderer.isVisible(level.props[i].aabb)) {
+        bs.Renderer.push(level.props[i].mesh, IDENTITY, level.props[i].material);
+      }
+    }
+
+    /* entidades */
+    if (weapons && typeof weapons.renderViewmodel === 'function') {
+      weapons.renderViewmodel(bs.Renderer, {
+        eyePos: _eye, yaw: pyaw, pitch: ppitch, roll: rollRad,
+        bobPhase: player ? player.bobPhase : 0,
+        speed01: player ? Math.min(1, player.speed / (player.CONFIG ? player.CONFIG.walkSpeed : 4.4)) : 0,
+        dt: dt
+      });
+    }
+    bs.Pickups.render(bs.Renderer);
+    bs.Projectiles.render(bs.Renderer);
+
+    bs.FX.beginFrame();
+    bs.FX.render(bs.Renderer);
+
+    bs.Renderer.flush();
+    bs.Renderer.present();
+
+    bs.Input.endFrame();
+
+    updateHud();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 8. Overlays                                                         */
+  /* ------------------------------------------------------------------ */
+  var hudAcc = 0;
+  function updateHud() {
+    hudAcc++;
+    if (hudAcc % 12 !== 0) return;
+    var st = bs.Debug.stats();
+    var ws = weapons ? weapons.getState() : null;
+    var line = 'BLACKSITE — sandbox LOTE B' + (AUTO ? '  [AUTO]' : '') + '\n' +
+      'fps=' + st.fps.toFixed(1) + '  frameMs=' + st.frameMs.toFixed(2) + '\n' +
+      'drawCalls=' + st.drawCalls + '  tris=' + st.tris + '\n' +
+      'particulas=' + st.particles + '  proyectiles=' + st.projectiles + '\n' +
+      'calidad=' + st.quality + '  linterna=' + (flashOn ? 'ON' : 'OFF') + '\n';
+    if (player) {
+      line += 'vida=' + Math.round(player.health) + '/' + player.maxHealth +
+        '  estado=' + player.state + '\n' +
+        'pos=' + player.pos[0].toFixed(1) + ',' + player.pos[1].toFixed(1) + ',' + player.pos[2].toFixed(1) +
+        '  vel=' + player.speed.toFixed(1) + ' m/s\n';
+    }
+    if (ws) {
+      line += 'arma=' + ws.name + ' [' + ws.slot + '] ' + ws.ammoInMag + '/' + ws.magSize +
+        ' res=' + ws.reserve + (ws.isReloading ? ' RECARGANDO' : '') + '\n';
+    }
+    line += 'pickups=' + bs.Pickups.count() + '/' + bs.Pickups.maxPickups + '  audio=' + (st.audioState || 'none');
+    hudPanel.textContent = line;
+  }
+
+  function buildDiagnostics() {
+    var res = bs.Debug.runAllSummary();
+    var lines = [];
+    lines.push('=== TESTS LOTE B (BS.Debug.runAll) ===');
+    lines.push((res.ok ? '<b class="ok">TODOS OK</b>' : '<b class="bad">FALLOS</b>') +
+      '  ' + (res.total - res.failed.length) + '/' + res.total);
+    for (var i = 0; i < res.results.length; i++) {
+      var r = res.results[i];
+      lines.push('  ' + (r.ok ? '✔' : '✘') + ' ' + r.id + '  ' + (r.error ? ('ERROR: ' + r.error) : (r.ms + ' ms')));
+    }
+    lines.push('');
+    lines.push('=== NIVEL (§4) ===');
+    lines.push('  chunks=' + level.chunkCount + '  props=' + level.props.length);
+    lines.push('  vértices=' + level.vertexCount + '  triángulos=' + level.triangleCount);
+    lines.push('  colisionadores=' + level.colliders.length + '  materiales=' + level.materialCount);
+    lines.push('  buildMs=' + Math.round(level.buildMs) + '  horno=' + level.bakeMs + ' ms (' + level.bakeQuality + ')');
+    lines.push('  spawns enemigos=' + (level.spawns.enemies || []).length +
+      '  pickups=' + (level.spawns.pickups || []).length +
+      '  oleadas=' + (level.waves || []).length);
+    lines.push('');
+    lines.push('=== TIEMPOS DE CONSTRUCCIÓN ===');
+    lines.push('  texturas  ' + timings.texturesMs + ' ms');
+    lines.push('  shaders   ' + timings.rendererMs + ' ms');
+    lines.push('  nivel     ' + timings.levelMs + ' ms');
+    lines.push('  errores capturados = ' + bs.Debug.errors.length);
+    diagPanel.innerHTML = lines.join('\n');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 9. Botones y arranque                                               */
+  /* ------------------------------------------------------------------ */
+  var bar = document.createElement('div');
+  bar.id = 'buttons';
+  function mkBtn(label, cls, fn) {
+    var b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.addEventListener('click', fn);
+    bar.appendChild(b);
+    return b;
+  }
+
+  mkBtn('SONIDO', '', function () { resumeAudio(); bs.Audio.play('ui_hover'); });
+  mkBtn('ARMA 1', '', function () { if (weapons) weapons.switchTo(1); });
+  mkBtn('ARMA 2', '', function () { if (weapons) weapons.switchTo(2); });
+  mkBtn('ARMA 3', '', function () { if (weapons) weapons.switchTo(3); });
+  mkBtn('RECARGA', '', function () { if (weapons) weapons.reload(); });
+  mkBtn('DISPARO', '', function () { if (weapons) weapons.tryFire(true, true); });
+  mkBtn('BOLT', '', function () {
+    bs.Projectiles.spawn({
+      pos: new Float32Array([_eye[0] + _fwd[0], _eye[1] + _fwd[1], _eye[2] + _fwd[2]]),
+      vel: new Float32Array([_fwd[0] * 28, _fwd[1] * 28 + 1.1, _fwd[2] * 28]),
+      damage: 65, speed: 28, life: 6, radius: 0.28, gravity: 12,
+      owner: 'player', ownerRef: player, splash: { radius: 3.2, damage: 65, falloff: 'linear' },
+      homing: 0, material: 'mat_bolt_plasma', color: [0.9, 0.5, 1.0], trail: true, lightRadius: 4
+    });
+    resumeAudio();
+  });
+  mkBtn('DAÑO 25', 'alt', function () { if (player) player.damage(25, null, 'test'); });
+  mkBtn('CURAR 25', 'alt', function () { if (player) player.heal(25); });
+  mkBtn('PICKUPS', 'alt', function () { respawnPickups(); });
+  mkBtn('LINTERNA', 'alt', function () { flashOn = !flashOn; });
+  mkBtn('TELEPORT SPAWN', 'alt', function () {
+    var s = level.spawns.player;
+    if (s) teleport(s.pos[0], s.pos[1], s.pos[2], s.yaw || 0);
+  });
+  var landIdx = -1;
+  var landBtn = mkBtn('ZONAS', 'alt', function () {
+    /* El botón recorre los landmarks del nivel. */
+    if (!level.landmarks || !level.landmarks.length) return;
+    landIdx = (landIdx + 1) % level.landmarks.length;
+    var lm = level.landmarks[landIdx];
+    teleport(lm.pos[0], lm.pos[1] + 0.95, lm.pos[2], player ? player.yaw : 0);
+    landBtn.textContent = 'ZONA: ' + lm.id;
+  });
+  mkBtn('TEST + DIAG', 'alt', function () { buildDiagnostics(); });
+  var qBtn = mkBtn('CALIDAD: ' + bs.Renderer.getQuality(), 'alt', function () {
+    var q = bs.Renderer.getQuality();
+    var next = q === 'high' ? 'medium' : (q === 'medium' ? 'low' : 'high');
+    bs.Debug.setQuality(next);
+    bs.FX.setParticleBudget(next === 'low' ? 250 : (next === 'medium' ? 900 : 2000));
+    qBtn.textContent = 'CALIDAD: ' + next;
+  });
+  document.body.appendChild(bar);
+
+  var cross = document.createElement('div');
+  cross.id = 'cross';
+  document.body.appendChild(cross);
+
+  window.addEventListener('resize', function () { bs.Renderer.resizeToDisplay(); });
+
+  if (!AUTO) {
+    hint.textContent = 'CLIC para bloquear el ratón — WASD mover, Shift correr, Ctrl/C agacharse, ' +
+      'Espacio saltar, clic disparar, R recargar, 1/2/3 armas, F linterna, H curar, V daño, P pickups';
+  } else {
+    hint.style.display = 'none';
+  }
+
+  buildDiagnostics();
+  requestAnimationFrame(frame);
+
+  /* Manejador mínimo para el tester (sin globales sueltos). */
+  window.BS.sandboxB = {
+    ctx: ctx,
+    level: level,
+    player: player,
+    weapons: weapons,
+    projectiles: bs.Projectiles,
+    pickups: bs.Pickups,
+    diagnostics: buildDiagnostics,
+    report: function () { return bs.Debug.report(); },
+    teleport: teleport,
+    respawnPickups: respawnPickups,
+    setFlashlight: function (on) { flashOn = !!on; },
+    timings: timings
+  };
+
+})();
+</script>
+</body>
+</html>

@@ -787,10 +787,13 @@
       var speed01 = M.clamp01(num(opts.speed01, 0));
       var dt = num(opts.dt, 1 / 60);
 
-      if (vmKick > 0) {
-        vmKick = M.damp(vmKick, 0, def.kickRecover || 10, dt);
-        if (vmKick < 1e-3) vmKick = 0;
-      }
+      /* NOTA: vmKick NO se amortigua aquí. Ya lo hace update(dt) (paso fijo de
+       * simulación). Antes estaba duplicado en este método, así que el retroceso
+       * se recuperaba ~2× más rápido de lo previsto (doble amortiguación con el
+       * mismo factor). El render no debe mutar estado de simulación. `dt` queda
+       * como parámetro de la firma por compatibilidad (el balanceo de más abajo
+       * usa bobPhase/speed01, no dt). */
+      void dt;
 
       /* base de la cámara en mundo */
       var cy = Math.cos(yaw), sy = Math.sin(yaw);

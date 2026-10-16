@@ -4,9 +4,10 @@ FPS 3D para navegador en una instalación de investigación abandonada. Motor
 **WebGL propio**, sin dependencias, sin servidor y sin instalación: se abre
 haciendo doble clic en `index.html`.
 
-> **Estado:** en desarrollo. Los resultados de las pruebas (qué se ejecutó y qué
-> no) están al final, en «Informe de verificación», y se completan cuando el
-> juego está terminado. Este documento no afirma nada que no se haya probado.
+> **Estado:** terminado y **verificado en un navegador real** (WebGL 2.0). El
+> informe de verificación, en §6, dice exactamente qué se ejecutó de verdad, con
+> qué cifras, qué no se pudo probar y por qué. Este documento no afirma nada que
+> no se haya medido.
 
 ---
 
@@ -133,16 +134,127 @@ cada fase está documentada:
 Las decisiones de diseño y los ajustes de alcance están en `docs/DECISIONS.md`, y
 el método de prueba verificado en `docs/HARNESS.md`.
 
+En una **segunda fase**, el equipo se volvió a movilizar para corregir dos bugs que
+reportó un usuario real al jugar desde `index.html` (los botones del menú no hacían
+nada y el clic no bloqueaba el ratón), más cuatro bugs extra encontrados al
+verificar. El resultado consolidado está en `docs/FIX-REPORT.md`, con la revisión en
+`docs/FIX-REVIEW.md`, las pruebas en `docs/FIX-TEST-REPORT.md` y la explicación
+didáctica en `docs/TEACHING-BUGS.md`.
+
 ---
 
 ## 6. Informe de verificación
 
-**Pendiente de completar.** Se rellena cuando el juego esté terminado, indicando:
+Todo lo de esta sección se ha **medido**, no deducido. El detalle completo, test a
+test, está en `docs/TEST-REPORT.md`; el método en `docs/HARNESS.md`; la revisión de
+código en `docs/REVIEW.md`; y la explicación didáctica en `docs/TEACHING.md`. La
+corrección de los bugs reportados por el usuario (fase 2) está en
+`docs/FIX-REPORT.md`, `docs/FIX-REVIEW.md`, `docs/FIX-TEST-REPORT.md` y
+`docs/TEACHING-BUGS.md`.
 
-- Qué agentes se pudieron ejecutar de verdad y cuáles no.
-- Qué se probó **ejecutándolo** en un navegador real (y cómo).
-- Qué **no** se pudo probar y por qué.
-- Errores conocidos y limitaciones, si quedan.
+### 6.1 Qué agentes se ejecutaron de verdad
+
+| Agente | ¿Ejecutado? | Resultado |
+|---|---|---|
+| `architect` | **Sí** | `docs/ARCHITECTURE.md` (22 ficheros, contrato de interfaces congelado, 20 riesgos, presupuestos de rendimiento). |
+| `developer` | **Sí, en 3 lotes** | Implementó el motor (lote A), el mundo/jugador (lote B) y el juego (lote C). Cerca del final **agotó su límite de tasa** (`Rate limit exceeded`). |
+| `reviewer` | **Sí, 3 pasadas** | Encontró los fallos reales (linterna invertida, emisivo sin escribir, `Textures.rebuild()` borrando materiales, truncado de `mesh:stride`, ambient duplicado, props duplicados) y, en la pasada final, M1/B1–B5 → `docs/REVIEW.md`. |
+| `tester` | **Sí** | Definió y ejecutó la batería de 28 auto-tests en un navegador real → `docs/TEST-REPORT.md`. |
+| `teacher` | **Sí** | `docs/TEACHING.md`: recorrido del código para 2.º de DAW (1346 líneas). |
+
+**Transparencia sobre la coordinación:** los subagentes se ejecutan sin permiso de
+escritura, así que devuelven su resultado y el **orquestador** lo guarda en `docs/`.
+Además, cuando el subagente `developer` agotó su límite de tasa, **el orquestador
+aplicó directamente el resto de correcciones de la Fase 5** (arranque, viewmodel,
+reinicio, ambiente, rutas, expectativas de tests y el arranque de `main.js`). Eso se
+declara aquí porque no lo hizo el `developer`. Después se **re-verificó todo desde
+cero** en el navegador.
+
+### 6.2 Cómo se probó (condiciones reales)
+
+Hay dos métodos, ambos sobre el navegador de escritorio real.
+
+**1) Inyección del motor en `about:blank`** (fase 1): se cargaron los **23 `.js`** en
+una pestaña `about:blank` y se inyectaron como `<script>` clásicos **en el mismo orden
+que `index.html`** (sin servidor, sin `fetch`, sin módulos ES, un único global
+`window.BS`, arte 100 % procedural). El juego se condujo con su API de depuración y la
+imagen se comprobó por píxeles (`tools/frame_probe.js`), porque `browser.screenshot`
+exige una ventana visible.
+
+**2) El `index.html` real como `file://`** (fase de corrección): el navegador de
+escritorio **sí** puede abrir el fichero real con sus `<script src>` relativos
+(`file:///…/index.html`), lo que permitió pulsar los botones del menú con **clics
+reales** y comprobar el flujo completo del usuario —justo la ruta que los bugs
+rompían—. Entorno: **WebGL 2.0** vía **ANGLE D3D11** sobre **Intel UHD Graphics 770**.
+
+> Límite honesto: sigue **sin ser** un doble clic desde el Explorador de Windows, pero
+> el documento cargado es el `index.html` real, en `file://`, con las mismas
+> restricciones (sin servidor, sin `fetch`, sin módulos).
+
+### 6.3 Resultados medidos
+
+- **Arranque:** 23 scripts con **0 errores**; **arranca sin parches** (`Main.ready=true`,
+  estado `menu`, contexto WebGL creado, calidad `high`, 0 errores capturados). Antes de
+  la Fase 5 el arranque se bloqueaba con `Game.isLowQuality is not a function`.
+- **Auto-tests: 28/28** en la fase 1 (antes: 20/26 con 6 falsos negativos y los dos
+  `math:*` sin registrarse) y **32/32** tras añadir los 4 tests de regresión de la
+  fase 2 (`menu:buttons`, `menu:pointerlock-overlay`, `input:lockfail-count`,
+  `boot:safety`).
+- **Render:** máximo **87 draw calls** (presupuesto §7.1 ≤ 90) y ~6.500–8.200 triángulos
+  en las posiciones medidas; `frameMs` ≈ 0.6–0.7 ms.
+- **Viewmodel del arma:** visible (1 draw call extra; al anularlo cambian 226/3.200
+  celdas muestreadas).
+- **Linterna:** aporta (centro 0.072 con ella vs 0.051 sin ella; cambian 675/3.200
+  celdas al apagarla).
+- **Iluminación:** luminancia media de escena **0.075–0.11** (antes del arreglo del
+  ambiente duplicado: **0.017**).
+- **Jugador:** ~4,3 m/s; **muerte** → estado `dead`; **reinicio** (`restartMission`) →
+  `playing` con 100 PV en el spawn.
+- **Armas:** MK-7 «VECTOR» (slot 1), VK-9 «HORNET» (slot 2), AR-12 «ALCOTÁN» (slot 3);
+  disparo y recarga correctos; las ranuras 2 y 3 se desbloquean al recoger el arma.
+- **Enemigos:** detectan, persiguen y atacan (100→78→56→12→0 en ~12 s con 2 enemigos).
+- **Oleadas y victoria:** la oleada 0 arranca en el atrio con 6 enemigos; al despejar la
+  última (con `victoryOnClear`) el estado pasa a **`victory`**.
+- **Tutorial y pausa:** `tutorial` y `paused`/`playing` funcionan.
+- **Bugs del usuario (fase 2):** los botones del menú funcionan (clic real en JUGAR →
+  `playing`; navegación y ajustes completos OK) y el clic es capturado por el overlay
+  del ratón (`elementFromPoint` → `bs-click-catch`, `pointer-events:auto`; `lockRequests`
+  +1 y `lockFailures` +1 exacto, sin disparo parásito). Detalle en `docs/FIX-REPORT.md`.
+
+### 6.4 Errores conocidos y limitaciones
+
+- **Draw calls al límite:** el máximo medido (87) deja **3 de margen** sobre el
+  presupuesto (90). Añadir más props sin agruparlos lo superaría. Documentado en
+  `docs/REVIEW.md` (B4).
+- **`Debug.setQuality`** es un *override* efímero (herramienta de test; no afecta al
+  jugador). `docs/REVIEW.md` (B5).
+- **No probado** (limitación del método, no del juego): la **concesión real** del
+  Pointer Lock con un ratón físico —el navegador de automatización la rechaza en
+  cualquier documento (`WrongDocumentError`), aunque sí se verificó que el clic llega
+  al overlay y que `requestPointerLock()` se ejecuta (`docs/FIX-REPORT.md` §4)—;
+  captura de pantalla; calidad de sonido «de oído» (sí se verificó que el contexto de
+  audio está `running`); sesiones largas/fugas de memoria y **otras GPU o navegadores**
+  (solo se probó en un equipo con Intel UHD 770 y motor Chromium). El detalle está en
+  `docs/TEST-REPORT.md` §6 y `docs/FIX-TEST-REPORT.md`.
+
+### 6.5 Bugs reportados por el usuario y su corrección
+
+Tras la entrega, un jugador reportó dos fallos reales jugando desde `index.html`:
+
+1. **«El `index.html` no funciona: le doy clic y no me lleva a ningún lugar.»** Los
+   botones del menú no hacían nada. Causa: el código interno de `menu.js` llamaba a
+   `S.show/S.hide/S.showClickCatch/S.applySettings`, que solo existían en el objeto
+   público `Menu` (no en el estado `S`), y el `TypeError` quedaba silenciado por el
+   `try/catch` de los botones. Arreglo: 4 alias `S.show = Menu.show;` en `menu.js`.
+2. **«Le doy clic para bloquear el ratón y no hace nada, solo dispara.»** El overlay
+   «CLIC PARA BLOQUEAR EL RATÓN» era transparente al ratón porque `.bs-click-catch` no
+   reponía `pointer-events:auto` (su padre `#bs-ui` es `pointer-events:none`). Arreglo:
+   `pointer-events:auto;` en `js/ui/style.js`.
+
+Se corrigieron además 4 bugs extra hallados al verificar y se añadieron 4 tests de
+regresión (28 → 32). El detalle completo —evidencia, arreglo, riesgos, pruebas y
+explicación didáctica— está en `docs/FIX-REPORT.md`, `docs/FIX-REVIEW.md`,
+`docs/FIX-TEST-REPORT.md` y `docs/TEACHING-BUGS.md`.
 
 ---
 

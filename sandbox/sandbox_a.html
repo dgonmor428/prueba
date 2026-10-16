@@ -28,6 +28,13 @@
 <div id="bs-root"></div>
 <noscript>Necesitas JavaScript activado.</noscript>
 
+<!-- Paneles del arnés. El CSS los define y el script los busca por id: si no
+     existen aquí, getElementById() devuelve null y el arnés falla al cargar. -->
+<div id="hud-panel"></div>
+<div id="diag-panel"></div>
+<div id="hint"></div>
+<div id="err"></div>
+
 <!-- Orden de carga §2.1 para el LOTE A (solo los 10 primeros archivos) -->
 <script src="../js/core/util.js"></script>
 <script src="../js/core/debug.js"></script>

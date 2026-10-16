@@ -647,6 +647,15 @@
 
   BS.Debug = Debug;
 
+  /* Vacía la cola de tests de módulos que cargan ANTES que este (§2.1):
+   * util.js deja ahí sus tests math:* porque BS.Debug aún no existía. */
+  if (BS._pendingTests && BS._pendingTests.length) {
+    for (var pi = 0; pi < BS._pendingTests.length; pi++) {
+      Debug.register(BS._pendingTests[pi][0], BS._pendingTests[pi][1]);
+    }
+    BS._pendingTests.length = 0;
+  }
+
   /* Auto-test del propio módulo: state() y stats() nunca deben lanzar. */
   Debug.register('debug:noThrow', function () {
     var s = Debug.state();

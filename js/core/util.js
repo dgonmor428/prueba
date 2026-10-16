@@ -415,6 +415,88 @@
       return n;
     }
   };
+
+  /* ======================================================================
+   * Red de seguridad global de arranque (BUG 5)
+   * ----------------------------------------------------------------------
+   * util.js se carga el PRIMERO, así que aquí se instala (UNA sola vez) un
+   * manejador de 'error' en fase de captura. Si un script del juego no carga
+   * o revienta antes de que BS.Main esté listo, la página se quedaría en
+   * negro sin ninguna pista: en ese caso pintamos un aviso legible.
+   * Es CONSERVADOR:
+   *   - no actúa si el juego llegó a arrancar (BS.Main.ready === true);
+   *   - no actúa si #bs-root ya tiene contenido (hay UI construida);
+   *   - no repite el aviso;
+   *   - no bloquea ni detiene el error (no toca window.onerror, que es lo que
+   *     usa BS.Debug.captureErrors, ni llama a preventDefault/stopPropagation).
+   * ==================================================================== */
+  var bootFailShown = false;
+  var bootFailTimer = null;
+
+  function showBootFailure(msg) {
+    if (bootFailShown) return;
+    if (typeof document === 'undefined') return;
+    if (window.BS && window.BS.Main && window.BS.Main.ready) return;
+    /* Si el documento aún se está analizando, el arranque todavía puede
+     * ocurrir: reagendamos en vez de avisar. Evita el falso positivo cuando el
+     * análisis es lento y ha habido algún error no fatal antes de boot(). */
+    if (document.readyState === 'loading') { scheduleBootFailureCheck(msg); return; }
+    var root = document.getElementById('bs-root');
+    if (!root || root.firstChild) return;
+    bootFailShown = true;
+    try {
+      var box = document.createElement('div');
+      box.id = 'bs-boot-fail';
+      box.style.cssText = 'position:absolute;left:0;top:0;right:0;bottom:0;display:flex;' +
+        'flex-direction:column;align-items:center;justify-content:center;gap:14px;' +
+        'background:#05070a;color:#ff8080;text-align:center;padding:24px;' +
+        'font-family:ui-monospace,Consolas,Menlo,monospace;font-size:13px;line-height:1.6;' +
+        'letter-spacing:.05em;z-index:99999;';
+      var t = document.createElement('div');
+      t.textContent = 'ERROR AL INICIAR BLACKSITE';
+      t.style.cssText = 'font-size:18px;letter-spacing:.22em;color:#ff5c5c;';
+      var d = document.createElement('div');
+      d.textContent = (msg ? String(msg) : 'no se pudo cargar un script');
+      d.style.cssText = 'max-width:70ch;word-break:break-word;';
+      var h = document.createElement('div');
+      h.textContent = 'Comprueba que la carpeta js/ esté completa y que el navegador permita WebGL.';
+      h.style.cssText = 'font-size:12px;opacity:.7;max-width:70ch;';
+      box.appendChild(t);
+      box.appendChild(d);
+      box.appendChild(h);
+      root.appendChild(box);
+    } catch (e) { /* noop */ }
+  }
+
+  /* Se comprueba con un pequeño retardo: BS.Main.boot() es SÍNCRONO y corre en
+   * DOMContentLoaded, así que esperamos a que haya tenido su oportunidad antes
+   * de dar el arranque por perdido (evita falsos positivos por errores no
+   * fatales registrados durante la carga). */
+  function scheduleBootFailureCheck(msg) {
+    if (bootFailShown || bootFailTimer !== null) return;
+    try {
+      bootFailTimer = window.setTimeout(function () {
+        bootFailTimer = null;
+        showBootFailure(msg);
+      }, 400);
+    } catch (e) { /* noop */ }
+  }
+
+  try {
+    if (window.addEventListener) {
+      window.addEventListener('error', function (ev) {
+        try {
+          var msg = '';
+          if (ev) {
+            if (ev.message) msg = String(ev.message);
+            else if (ev.target && ev.target.tagName) msg = 'no se pudo cargar un script';
+          }
+          scheduleBootFailureCheck(msg);
+        } catch (e) { /* noop */ }
+      }, true);
+    }
+  } catch (e) { /* noop */ }
+
   BS.Util = Util;
 
   /* ======================================================================
@@ -1011,9 +1093,12 @@
   /* ======================================================================
    * Tests de auto-verificación registrados en BS.Debug
    * ==================================================================== */
-  /* Los registros se hacen cuando BS.Debug ya existe (orden de carga §2.1). */
-  if (BS.Debug && typeof BS.Debug.register === 'function') {
-    BS.Debug.register('math:rayAABB', function () {
+  /* util.js carga el PRIMERO (§2.1), así que cuando se ejecuta este bloque
+   * BS.Debug AÚN NO EXISTE. Registrar solo con BS.Debug.register (como se hacía
+   * antes) perdía los tests math:* en silencio: el else solo dejaba un aviso.
+   * Ahora se encolan en BS._pendingTests y debug.js los vacía al publicarse. */
+  var mathTests = [
+    ['math:rayAABB', function () {
       var o = new Float32Array([0, 0, 0]);
       var d = new Float32Array([0, 0, 1]);
       var hit = M.rayAABB(o, d, new Float32Array([-1, -1, 5]), new Float32Array([1, 1, 7]), 100);
@@ -1023,9 +1108,8 @@
         new Float32Array([-1, -1, 5]), new Float32Array([1, 1, 7]));
       var ok = Math.abs(hit - 5) < 1e-5 && miss === -1 && inside === 0 && Math.abs(seg - 0.5) < 1e-5;
       return { ok: ok, hit: hit, miss: miss, inside: inside, segmentT: seg };
-    });
-
-    BS.Debug.register('math:matrixInvert', function () {
+    }],
+    ['math:matrixInvert', function () {
       var proj = M.m4perspective(M.m4(), 70 * M.DEG, 16 / 9, 0.05, 400);
       var view = M.m4fromYawPitchPos(M.m4(), 0.9, -0.3, new Float32Array([3, 4, 5]));
       var m = M.m4multiply(M.m4(), proj, view);
@@ -1038,9 +1122,13 @@
         if (e > maxErr) maxErr = e;
       }
       return { ok: maxErr < 1e-4, maxError: maxErr };
-    });
+    }]
+  ];
+  if (BS.Debug && typeof BS.Debug.register === 'function') {
+    for (var ti = 0; ti < mathTests.length; ti++) BS.Debug.register(mathTests[ti][0], mathTests[ti][1]);
   } else {
-    Log.warn('BS.Debug no disponible al cargar util.js: los tests math:* no se registran');
+    if (!BS._pendingTests) BS._pendingTests = [];
+    for (var qi = 0; qi < mathTests.length; qi++) BS._pendingTests.push(mathTests[qi]);
   }
 
 })(window.BS = window.BS || {});

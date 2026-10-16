@@ -230,6 +230,22 @@
 
   BS.Main = Main;
 
+  /* Regresión de la red de seguridad de arranque (js/core/util.js): en un
+   * arranque correcto NO debe aparecer #bs-boot-fail y Main debe estar listo.
+   * Si BS.Main no existe (arnés parcial) el test se omite, no falla. */
+  if (BS.Debug && typeof BS.Debug.register === 'function') {
+    BS.Debug.register('boot:safety', function () {
+      if (!window.BS || !window.BS.Main) return { ok: true, notas: ['BS.Main ausente: no aplicable'], skipped: true };
+      var ok = true, notes = [];
+      var box = document.getElementById('bs-boot-fail');
+      if (box) { ok = false; notes.push('#bs-boot-fail visible en un arranque correcto'); }
+      if (!Main.ready) { ok = false; notes.push('BS.Main.ready=false'); }
+      var root = document.getElementById('bs-root');
+      if (!root || !root.firstChild) { ok = false; notes.push('#bs-root sin contenido'); }
+      return { ok: ok, notas: notes, mainReady: !!Main.ready, bootFail: !!box };
+    });
+  }
+
   /* Auto-arranque: main.js se carga el último, pero puede que el parser aún
    * no haya terminado (readyState 'loading'): entonces esperamos a
    * DOMContentLoaded. Nunca lanza. */

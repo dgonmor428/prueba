@@ -1062,7 +1062,13 @@
         [10, 0, -28], [20, 0, -28], [30, 0, -28], [36, 0, -28],
         [46, 0, -28], [57, 0, -28], [57, 0, -43],
         [60, 0, -44], [66, 0, -44], [70, 0, -44], [74, 0, -43.5],
-        [78, 0, -43.5], [82, 0, -42], [84, 0, -39], [86, 0, -38.6]
+        [78, 0, -43.5], [82, 0, -42],
+        /* Acceso a la sala de control: hay un PANEL BAJO de metal
+           (x∈[84.5,87.5], y∈[0,1.1], z∈[-40.3,-39.1]). El tramo anterior
+           [84,0,-39]→[86,0,-38.6] rozaba su esquina (3 cm) y el test de
+           transitabilidad lo marcaba como "sin espacio libre". Se entra por
+           z=-38.6, que está libre. (Medido en navegador real.) */
+        [84, 0, -38.6], [86, 0, -38.6]
       ],
       roomStats: {},
       meta: {}

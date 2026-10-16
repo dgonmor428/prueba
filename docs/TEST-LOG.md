@@ -5,6 +5,11 @@ real** (WebGL 2.0, Intel UHD Graphics 770 vía ANGLE D3D11), no por inspección 
 código. Todo lo que aparece aquí como «OK» se ha **medido**; lo que no se ha
 podido probar aparece marcado como tal.
 
+> **Nota:** este documento es el registro **histórico** de las primeras fases
+> (incluidos los fallos que se encontraron entonces). El informe final
+> consolidado y re-verificado **después** de la Fase 5 está en
+> **`docs/TEST-REPORT.md`**, y el resumen para el lector en `README.md` §6.
+
 ## 1. Método (cómo se ha probado sin poder abrir `file://`)
 
 1. Se carga la lista de archivos del proyecto en una pestaña `about:blank`

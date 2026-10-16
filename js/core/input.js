@@ -42,6 +42,8 @@
     _lastClientX: null,
     _lastClientY: null,
     _usingMovement: true,
+    _rawUnsupported: false,
+    _failReported: false,
     _bound: false,
 
     PREVENT_DEFAULT: {
@@ -164,12 +166,20 @@
     },
 
     _onLockError: function (ev) {
-      Input.lastLockError = (ev && ev.type) ? ev.type : 'pointerlockerror';
-      Input.lockFailures++;
-      Input.locked = false;
-      for (var i = 0; i < lockErrSubs.length; i++) {
-        try { lockErrSubs[i].cb(Input.lastLockError); } catch (e) { BS.Log.error('Input.onLockError handler:', e && e.message); }
+      /* Un mismo intento fallido puede avisar DOS veces: por la promesa
+       * rechazada de requestPointerLock y por el evento 'pointerlockerror'.
+       * `_failReported` garantiza un solo conteo/aviso por intento (antes un
+       * único fallo incrementaba lockFailures 2-3 veces y duplicaba el toast). */
+      var reason = (ev && ev.type) ? ev.type : 'pointerlockerror';
+      if (!Input._failReported) {
+        Input._failReported = true;
+        Input.lastLockError = reason;
+        Input.lockFailures++;
+        for (var i = 0; i < lockErrSubs.length; i++) {
+          try { lockErrSubs[i].cb(Input.lastLockError); } catch (e) { BS.Log.error('Input.onLockError handler:', e && e.message); }
+        }
       }
+      Input.locked = false;
       return false;
     },
 
@@ -209,42 +219,55 @@
       if (Input.locked || document.pointerLockElement === el) return;
       Input.lockRequests++;
       Input.lastLockError = null;
+      Input._failReported = false;   // un intento = como máximo un fallo reportado
 
       var onFail = function (err) {
-        Input.lastLockError = err || 'rechazado';
-        Input.lockFailures++;
-        BS.Log.debug('BS.Input.requestPointerLock rechazado:', Input.lastLockError);
-        Input._onLockError({ type: 'request-rejected' });
+        BS.Log.debug('BS.Input.requestPointerLock rechazado:', err || 'rechazado');
+        Input._onLockError({ type: err || 'request-rejected' });
       };
 
-      try {
-        var p = null;
+      /* Realiza UNA petición. `useRaw` activa "unadjustedMovement";
+       * `isRetry` limita a una sola vez el reintento simple. */
+      var ask = function (useRaw, isRetry) {
+        var q = null;
         try {
-          p = el.requestPointerLock({ unadjustedMovement: true });
-        } catch (e0) {
-          p = el.requestPointerLock();
+          q = useRaw ? el.requestPointerLock({ unadjustedMovement: true })
+                     : el.requestPointerLock();
+        } catch (e) {
+          if (useRaw && !isRetry) {
+            /* Un lanzamiento SÍNCRONO suele significar "el diccionario de
+             * opciones no está soportado" (TypeError en navegadores antiguos).
+             * No marcamos la capacidad como ausente si es un error de
+             * seguridad/activación, para no dejar la marca pegada por error. */
+            var nm = (e && e.name) || '';
+            if (nm !== 'SecurityError' && nm !== 'NotAllowedError') Input._rawUnsupported = true;
+            ask(false, true);               // reintento simple, aún en el gesto
+          } else {
+            onFail('requestPointerLock no disponible');
+          }
+          return;
         }
-        if (p && typeof p.then === 'function') {
-          p.then(function () {
+        if (q && typeof q.then === 'function') {
+          q.then(function () {
             // el evento pointerlockchange confirma el estado real
-          }).catch(function () {
-            // fallback: sin unadjustedMovement
-            try {
-              var q = el.requestPointerLock();
-              if (q && typeof q.catch === 'function') q.catch(function () { onFail('reintento rechazado'); });
-            } catch (e1) {
-              onFail('reintento imposible');
+          }).catch(function (err) {
+            var name = (err && err.name) || '';
+            if (useRaw && !isRetry && name === 'NotSupportedError') {
+              /* Capacidad ausente (no culpa del usuario): marcamos para que el
+               * SIGUIENTE gesto use la variante simple y reintentamos una vez
+               * por si la activación sigue viva. NO reintentamos en bucle: una
+               * promesa resuelta fuera del gesto sería rechazada igualmente. */
+              Input._rawUnsupported = true;
+              ask(false, true);
+              return;
             }
+            onFail(name || 'rechazado');
           });
         }
-      } catch (e) {
-        try {
-          var q2 = el.requestPointerLock();
-          if (q2 && typeof q2.catch === 'function') q2.catch(function () { onFail('requestPointerLock rechazado'); });
-        } catch (e2) {
-          onFail('requestPointerLock no disponible');
-        }
-      }
+      };
+
+      if (Input._rawUnsupported) ask(false, true);
+      else ask(true, false);
     },
 
     exitPointerLock: function () {
@@ -359,7 +382,8 @@
         lockRequests: Input.lockRequests,
         lockFailures: Input.lockFailures,
         lastLockError: Input.lastLockError,
-        usingMovementXY: Input._usingMovement
+        usingMovementXY: Input._usingMovement,
+        rawUnsupported: Input._rawUnsupported
       };
     }
   };
@@ -384,6 +408,44 @@
       if (d2.dx !== 0 || d2.dy !== 0) { ok = false; notes.push('consumeMouseDelta no resetea'); }
       Input.clearAll();
       return { ok: ok, notes: notes, bound: Input._bound };
+    });
+
+    /* Regresión: un mismo intento fallido llega por DOS vías (rechazo de la
+     * promesa/throw Y evento 'pointerlockerror'). Antes contaba 2-3 veces y
+     * duplicaba el aviso; ahora debe contar EXACTAMENTE 1 por intento. */
+    BS.Debug.register('input:lockfail-count', function () {
+      var ok = true, notes = [];
+      var sv = {
+        canvas: Input._canvas, locked: Input.locked, failReported: Input._failReported,
+        rawUnsupported: Input._rawUnsupported, lastLockError: Input.lastLockError,
+        lockFailures: Input.lockFailures, lockRequests: Input.lockRequests
+      };
+      var a1 = 0, a1b = 0, a2 = 0;
+      try {
+        var fake = document.createElement('canvas');
+        fake.requestPointerLock = function () { throw new Error('stub: sin Pointer Lock real'); };
+        Input._canvas = fake;
+        Input.locked = false;
+        Input._failReported = false;
+        var base = Input.lockFailures;
+
+        Input.requestPointerLock();                              // intento 1 (falla)
+        a1 = Input.lockFailures - base;
+        document.dispatchEvent(new Event('pointerlockerror'));   // 2ª señal del MISMO intento
+        a1b = Input.lockFailures - base;
+        Input.requestPointerLock();                              // intento 2 (falla)
+        a2 = Input.lockFailures - base;
+
+        if (a1 !== 1) { ok = false; notes.push('intento 1 contó ' + a1 + ' (esperado 1)'); }
+        if (a1b !== 1) { ok = false; notes.push('señal duplicada contó ' + a1b + ' (esperado 1)'); }
+        if (a2 !== 2) { ok = false; notes.push('2 intentos contaron ' + a2 + ' (esperado 2)'); }
+      } catch (e) {
+        ok = false; notes.push('excepción: ' + (e && e.message ? e.message : e));
+      }
+      Input._canvas = sv.canvas; Input.locked = sv.locked; Input._failReported = sv.failReported;
+      Input._rawUnsupported = sv.rawUnsupported; Input.lastLockError = sv.lastLockError;
+      Input.lockFailures = sv.lockFailures; Input.lockRequests = sv.lockRequests;
+      return { ok: ok, notas: notes, intento1: a1, senalDuplicada: a1b, intento2: a2 };
     });
   }
 

@@ -609,6 +609,14 @@
 
     setQuality: function (q) {
       if (q !== 'low' && q !== 'medium' && q !== 'high' && q !== 'auto') return;
+      /* Si la calidad EFECTIVA no cambia, no hay nada que rehacer. Sin esta
+       * salida temprana, Game.applySettings (que se dispara al mover CUALQUIER
+       * slider, p. ej. el de volumen) llamaba a applyQuality y este método
+       * recompilaba los 4 programas de shader en cada evento: tirones al
+       * arrastrar un deslizador. Los programas ya se compilan en init()
+       * (línea ~539), así que saltarse el trabajo cuando q es la misma es
+       * correcto. */
+      if (R.quality === q) return;
       R.quality = q;
       Renderer.quality = q;
       if (q === 'low') {

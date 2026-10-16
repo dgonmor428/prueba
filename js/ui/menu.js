@@ -138,13 +138,21 @@
     S.clickCatch.appendChild(ccTitle);
     S.clickCatch.appendChild(ccHint);
     BS.Util.addListener(S.clickCatch, 'click', function () {
-      S.showClickCatch(false);
+      /* NO ocultamos el overlay aquí: se retira en onLockChange cuando el
+       * navegador CONFIRMA el Pointer Lock. Si la petición falla (cooldown
+       * tras Escape, etc.) el overlay permanece y el usuario puede reintentar. */
       if (typeof S.cb.onRequestLock === 'function') {
         try { S.cb.onRequestLock(); } catch (e) { /* noop */ }
       } else if (BS.Input && BS.Input.requestPointerLock) {
-        BS.Input.requestPointerLock();
+        try { BS.Input.requestPointerLock(); } catch (e) { /* noop */ }
       }
     });
+    /* Hardening: mientras el overlay está visible, el clic sirve SOLO para
+     * capturar el ratón; no debe llegar a window (donde BS.Input registraría
+     * el botón y el arma dispararía un tiro parásito). */
+    BS.Util.addListener(S.clickCatch, 'mousedown', function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); });
+    BS.Util.addListener(S.clickCatch, 'mouseup', function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); });
+    BS.Util.addListener(S.clickCatch, 'wheel', function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); });
     S.ui.appendChild(S.clickCatch);
 
     // --- pantallas ---
@@ -686,6 +694,15 @@
     }
   };
 
+  /* Alias internos: el código de construcción (arriba) invoca S.show/S.hide/
+   * S.showClickCatch/S.applySettings, pero la implementación vive en el objeto
+   * público Menu. Sin estos alias los botones del menú lanzaban TypeError
+   * ("S.hide is not a function") y no hacían nada. Ninguno usa `this`. */
+  S.show = Menu.show;
+  S.hide = Menu.hide;
+  S.showClickCatch = Menu.showClickCatch;
+  S.applySettings = Menu.applySettings;
+
   BS.Menu = Menu;
 
   /* ======================================================================
@@ -741,6 +758,97 @@
       }
 
       return { ok: ok, notas: notes, pantallas: SCREENS.length, ajustes: Object.keys(Menu.getSettings()).length };
+    });
+
+    /* ==================================================================
+     * Regresión del BUG del menú: los botones invocaban S.show/S.hide/
+     * S.applySettings, que NO existían en S; el TypeError quedaba silenciado
+     * por el try/catch de mkButton y la pantalla no cambiaba. Restaura el
+     * estado al terminar para no alterar la sesión del jugador.
+     * ================================================================== */
+    BS.Debug.register('menu:buttons', function () {
+      var ok = true, notes = [];
+      var saved = {}, savedCurrent = 'main';
+      try {
+        if (!S.built) Menu.init(S.ctx);
+        var s0 = Menu.getSettings();
+        for (var k in s0) if (Object.prototype.hasOwnProperty.call(s0, k)) saved[k] = s0[k];
+        var stc = Menu.state();
+        savedCurrent = stc ? stc.current : 'main';
+
+        var clickIn = function (screenId, text) {
+          var sc = document.getElementById('bs-screen-' + screenId);
+          if (!sc) { notes.push('sin pantalla ' + screenId); return false; }
+          var bs = sc.querySelectorAll('button');
+          for (var i = 0; i < bs.length; i++) {
+            if ((bs[i].textContent || '').replace(/\s+/g, ' ').trim() === text) { bs[i].click(); return true; }
+          }
+          notes.push('botón ' + screenId + '/' + text + ' no encontrado');
+          return false;
+        };
+        var expect = function (screen) {
+          if (Menu.current() !== screen) { ok = false; notes.push('esperaba ' + screen + ', quedó ' + Menu.current()); }
+        };
+
+        // S.show(...) — antes: "S.show is not a function".
+        Menu.show('main'); expect('main');
+        if (clickIn('main', 'TUTORIAL')) expect('tutorial');
+        if (clickIn('tutorial', 'VOLVER')) expect('main');
+        if (clickIn('main', 'AJUSTES')) expect('settings');
+        // S.applySettings(...) — antes: "S.applySettings is not a function".
+        Menu.applySettings({ fov: 97 });
+        if (clickIn('settings', 'RESTABLECER AJUSTES')) {
+          var def = (BS.Util && BS.Util.settingsDefaults) ? BS.Util.settingsDefaults() : null;
+          if (Menu.getSettings().fov === 97 && (!def || def.fov !== 97)) { ok = false; notes.push('RESTABLECER no repuso fov'); }
+        }
+        if (clickIn('settings', 'VOLVER')) expect('main');
+        // S.hide() — antes: "S.hide is not a function".
+        Menu.show(null);
+        if (Menu.current() !== null) { ok = false; notes.push('show(null) no ocultó (S.hide)'); }
+      } catch (e) {
+        ok = false; notes.push('excepción: ' + (e && e.message ? e.message : e));
+      }
+      try { Menu.applySettings(saved); } catch (e1) { /* noop */ }
+      try { Menu.show(savedCurrent === undefined ? 'main' : savedCurrent); } catch (e2) { /* noop */ }
+      return { ok: ok, notas: notes };
+    });
+
+    /* ==================================================================
+     * Regresión del BUG del Pointer Lock: el overlay debía recibir clics.
+     * #bs-ui es pointer-events:none; el overlay no lo reactivaba y el clic
+     * atravesaba hasta el canvas, así que requestPointerLock() no se llamaba.
+     * ================================================================== */
+    BS.Debug.register('menu:pointerlock-overlay', function () {
+      var ok = true, notes = [];
+      var savedCurrent = 'main', wasVisible = false;
+      try {
+        if (!S.built) Menu.init(S.ctx);
+        var cc = document.getElementById('bs-click-catch');
+        if (!cc) { ok = false; notes.push('no existe #bs-click-catch'); }
+        else {
+          var cs0 = null;
+          try { cs0 = getComputedStyle(cc); } catch (e0) { /* noop */ }
+          wasVisible = !!(cs0 && cs0.display !== 'none');
+          var pe = cs0 ? cs0.pointerEvents : '';
+          if (pe !== 'auto') { ok = false; notes.push('pointer-events=' + pe + ' (esperado auto)'); }
+
+          var stc = Menu.state();
+          savedCurrent = stc ? stc.current : 'main';
+          Menu.show(null);                         // el overlay debe quedar arriba
+          Menu.showClickCatch(true, 'TEST POINTER LOCK');
+          var cx = Math.floor((window.innerWidth || 800) / 2);
+          var cy = Math.floor((window.innerHeight || 600) / 2);
+          var hit = null;
+          try { hit = document.elementFromPoint(cx, cy); } catch (e1) { /* noop */ }
+          var id = hit ? (hit.id || '') : '';
+          if (id !== 'bs-click-catch') { ok = false; notes.push('elementFromPoint=' + (id || 'null')); }
+          Menu.showClickCatch(wasVisible);
+        }
+      } catch (e) {
+        ok = false; notes.push('excepción: ' + (e && e.message ? e.message : e));
+      }
+      try { Menu.show(savedCurrent === undefined ? 'main' : savedCurrent); } catch (e2) { /* noop */ }
+      return { ok: ok, notas: notes };
     });
   }
 

@@ -1424,7 +1424,13 @@
         if (BS.FX && BS.FX.setParticleBudget) BS.FX.setParticleBudget(qualityValue('particleBudget'));
         if (ctx.hud && ctx.hud.showCrosshair) ctx.hud.showCrosshair(t2.crosshair !== 'none');
         if (BS.Util.saveSettings) BS.Util.saveSettings(t2);
-        if (t2.quality !== 'auto') Game.applyQuality(t2.quality);
+        /* quality='auto' NO se ignora: se re-resuelve con el hardware actual
+         * (resolveQuality pliega el ajuste del usuario y la detección de GPU).
+         * Ignorarlo dejaba la calidad congelada en el valor anterior: elegir
+         * AUTO en el menú no volvía a 'high'/'medium'/'low' según la máquina,
+         * y el test menu:settings (que restaura quality='auto') contaminaba
+         * ctx.quality con su 'medium' temporal. */
+        Game.applyQuality(resolveQuality(t2));
       } catch (e) { logOnce('applySettings', e); }
     },
 

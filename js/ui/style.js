@@ -253,7 +253,7 @@
 
   /* --------------------- captura de clic para el Pointer Lock ------------ */
   add('.' + CLASS.clickCatch + '{position:absolute;left:0;top:0;right:0;bottom:0;z-index:30;display:none;');
-  add('  flex-direction:column;align-items:center;justify-content:center;gap:10px;cursor:pointer;');
+  add('  flex-direction:column;align-items:center;justify-content:center;gap:10px;cursor:pointer;pointer-events:auto;');
   add('  background:rgba(2,5,8,.5);color:#d9f6ff;letter-spacing:.22em;font-size:14px;text-align:center}');
   add('.' + CLASS.clickCatch + '.' + CLASS.on + '{display:flex}');
   add('.' + CLASS.clickCatch + ' .' + CLASS.small + '{letter-spacing:.1em}');

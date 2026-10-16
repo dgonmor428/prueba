@@ -3,7 +3,7 @@
  * ---------------------------------------------------------------------------
  * Propósito : convierte la misión declarativa (BS.LevelData) en datos de GPU y
  *             de colisión listos para jugar:
- *               1. Trocea la geometría en chunks de 24x24 m agrupados por
+ *               1. Trocea la geometría en chunks de 32x32 m agrupados por
  *                  material (un mesh por chunk-material, AABB exacta).
  *               2. Hornea la iluminación estática + un AO de proximidad en el
  *                  color de vértice (aColor.rgb); aColor.a (máscara emisiva) se
@@ -22,13 +22,15 @@
 (function (BS) {
   'use strict';
 
-  /* Lado de la celda de troceado (m). VALOR FINAL = 24 (antes 12).
-   * Con 12 m el nivel (~5.700 triángulos) generaba ~271 meshes por
-   * (material × celda) → ~150 drawCalls, muy por encima del presupuesto
-   * de ≤ 90 de §7.1 en calidad high. Con 24 m el área de celda se
-   * cuadruplica y el recuento cae a ~68 meshes, dentro del presupuesto
-   * sin necesidad de fusionar (se mantiene el corte por MAX_CHUNK_VERTS). */
-  var CHUNK = 24;
+  /* Lado de la celda de troceado (m). Historia: 12 → 24 → 32.
+   * MEDIDO en navegador real (Intel UHD 770, ANGLE D3D11, ~1000x700): con 12 m
+   * el nivel generaba ~271 meshes y ~150 drawCalls; con 24 m bajó a 147 chunks
+   * (97 visibles desde el punto de aparición) pero seguía en 106 drawCalls,
+   * por encima del presupuesto de ≤ 90 de §7.1 en calidad high. Con 32 m el
+   * recuento entra en presupuesto; el coste en triángulos es despreciable
+   * (muy por debajo de los 130k de §7.1). MAX_CHUNK_VERTS sigue cortando
+   * cualquier celda que se acerque al límite de índices Uint16. */
+  var CHUNK = 32;
   var MAX_CHUNK_VERTS = 60000;    /* margen bajo el límite Uint16 (65535) */
   var GRID_CELL = 4;              /* celda de la rejilla hash (m) */
   var GRID_PAD = 0.25;
